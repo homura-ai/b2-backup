@@ -37,11 +37,11 @@ class BackupTests(unittest.TestCase):
             'RESTIC_REPOSITORY=b2:fixture-bucket:fixture\n'
             'BACKUP_HOST=testhost\n'
             'BACKUP_PATHS=("$HOME/code" "$HOME/.config/systemd/user")\n'
-            'BACKUP_OPTIONAL_PATHS=("$HOME/rescue" "$HOME/missing")\n'
+            'BACKUP_OPTIONAL_PATHS=("$HOME/git-bundles" "$HOME/missing")\n'
             'EXTRA_EXCLUDES=("$HOME/code/big")\n'
             f'SQLITE_COPIES=("{self.db}")\n'
             'NOTIFY_CMD=(notify-stub)\n')
-        (self.home / 'rescue').mkdir()
+        (self.home / 'git-bundles').mkdir()
         (self.home / 'bin').mkdir()
         for name in ('restic', 'notify-stub'):
             stub = self.home / 'bin' / name
@@ -81,7 +81,7 @@ class BackupTests(unittest.TestCase):
                      str(self.home / '.local/state/b2-backup/sqlite-copies/*.tmp')):
             self.assertIn(item, args)
         self.assertEqual(args[-4:], [str(self.home / p) for p in
-                         ('code', '.config/systemd/user', 'rescue',
+                         ('code', '.config/systemd/user', 'git-bundles',
                           '.local/state/b2-backup/sqlite-copies')])
 
     def test_dry_run_runs_nothing(self):
