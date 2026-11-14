@@ -1,0 +1,10 @@
+[Unit]
+Description=Weekly restic retention and cap-safe prune
+OnFailure=b2-backup-notify@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/b2-backup prune
+TimeoutStartSec=45min
+TimeoutStopSec=30s
+UMask=0077

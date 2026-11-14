@@ -1,0 +1,12 @@
+[Unit]
+Description=Apply restic retention weekly (cap-safe prune)
+
+[Timer]
+# Weekly, not daily: a daily prune helped exhaust a B2 download cap once.
+OnCalendar=Sun *-*-* 03:30:00
+RandomizedDelaySec=15min
+Persistent=true
+Unit=b2-backup-prune.service
+
+[Install]
+WantedBy=timers.target

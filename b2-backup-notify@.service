@@ -1,0 +1,10 @@
+[Unit]
+Description=Report a backup failure in %i
+
+[Service]
+Type=oneshot
+# Runs NOTIFY_CMD from the config (default: notify-send). Its own failure is
+# logged and does not replace the original unit's failed status.
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus
+ExecStart=-%h/.local/bin/b2-backup notify %i
+TimeoutStartSec=5min

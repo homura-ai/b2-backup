@@ -1,0 +1,10 @@
+[Unit]
+Description=Monthly restic repository check (local cache, no data download)
+OnFailure=b2-backup-notify@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/b2-backup check
+TimeoutStartSec=45min
+TimeoutStopSec=30s
+UMask=0077

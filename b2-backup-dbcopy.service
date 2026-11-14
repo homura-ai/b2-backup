@@ -1,0 +1,9 @@
+[Unit]
+Description=Daily consistent copy of live SQLite files for the backup
+OnFailure=b2-backup-notify@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/b2-backup dbcopy
+TimeoutStartSec=20min
+UMask=0077

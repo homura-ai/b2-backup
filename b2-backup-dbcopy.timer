@@ -1,0 +1,10 @@
+[Unit]
+Description=Copy live SQLite files for the backup daily
+
+[Timer]
+OnCalendar=*-*-* 03:45:00
+Persistent=true
+Unit=b2-backup-dbcopy.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,11 @@
+[Unit]
+Description=Check the restic repository monthly
+
+[Timer]
+OnCalendar=*-*-01 04:30:00
+RandomizedDelaySec=15min
+Persistent=true
+Unit=b2-backup-check.service
+
+[Install]
+WantedBy=timers.target

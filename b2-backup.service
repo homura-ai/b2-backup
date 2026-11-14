@@ -1,0 +1,10 @@
+[Unit]
+Description=Encrypted restic backup to B2
+OnFailure=b2-backup-notify@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/b2-backup backup
+TimeoutStartSec=20min
+TimeoutStopSec=30s
+UMask=0077

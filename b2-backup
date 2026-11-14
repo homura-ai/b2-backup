@@ -1,0 +1,157 @@
+#!/usr/bin/bash
+# Encrypted restic backup to Backblaze B2 (or any restic repository).
+# Usage: b2-backup [--dry-run] [backup|initial|prune|check|dbcopy|notify UNIT|show-config]
+# Settings come from $B2_BACKUP_CONFIG (default ~/.config/b2-backup/config.sh).
+set -euo pipefail
+umask 077
+
+usage='Usage: b2-backup [--dry-run] [backup|initial|prune|check|dbcopy|notify UNIT|show-config]'
+# --dry-run (or -n) is accepted in any position: "b2-backup prune --dry-run"
+# must never run a real prune. Unknown options and extra arguments are refused.
+dry_run=0
+args=()
+for arg in "$@"; do
+    case "$arg" in
+        --dry-run|-n) dry_run=1 ;;
+        -*) echo "b2-backup: unknown option $arg" >&2; echo "$usage" >&2; exit 2 ;;
+        *) args+=("$arg") ;;
+    esac
+done
+set -- "${args[@]}"
+[[ "${B2_BACKUP_DRY_RUN:-0}" == 1 ]] && dry_run=1
+mode="${1:-backup}"
+max_args=1; [[ "$mode" == notify ]] && max_args=2
+if (( $# > max_args )); then echo "b2-backup: too many arguments" >&2; echo "$usage" >&2; exit 2; fi
+
+# ---- defaults (override any of these in the config file) ----
+config="${B2_BACKUP_CONFIG:-$HOME/.config/b2-backup/config.sh}"
+B2_ENV_FILE="$HOME/.config/b2-backup/b2.env"      # B2_ACCOUNT_ID / B2_ACCOUNT_KEY
+RESTIC_PASSWORD_FILE="$HOME/.config/b2-backup/restic-password"
+RESTIC_REPOSITORY="${RESTIC_REPOSITORY:-}"         # e.g. b2:my-bucket:my-host
+BACKUP_HOST="$(hostname -s 2>/dev/null || echo localhost)"
+BACKUP_TAG=auto
+BACKUP_PATHS=("$HOME/code" "$HOME/.config/systemd/user" "$HOME/.local/bin")
+BACKUP_OPTIONAL_PATHS=()      # added only when they exist
+EXTRA_EXCLUDES=()             # machine-specific patterns or absolute paths
+SQLITE_COPIES=()              # live SQLite files to copy consistently (dbcopy mode)
+COMPRESSION=max               # restic --compression: auto, max or off
+KEEP_ARGS=(--keep-last 36 --keep-hourly 48 --keep-daily 14 --keep-weekly 8)
+# Cap-safe prune: never repack data packs, so prune downloads no pack data.
+PRUNE_ARGS=(--max-unused unlimited --repack-cacheable-only)
+VERIFY_FILE=""                # restored and compared once after the first backup
+STATE_DIR="$HOME/.local/state/b2-backup"
+LOCK_FILE="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/b2-backup.lock"
+NOTIFY_CMD=(notify-send -a Backup -u critical)   # called as: NOTIFY_CMD title body
+# Cache and build output, matched by name anywhere. Override in the config if a
+# source folder you need is called build, dist, target or cache.
+BULK_EXCLUDES=(node_modules .venv venv dist target .next .turbo build
+    .cache cache caches Cache Caches CachedData GPUCache CodeCache
+    __pycache__ .pytest_cache .mypy_cache .ruff_cache)
+# shellcheck source=/dev/null
+[[ -f "$config" ]] && source "$config"
+
+# Secret excludes that every install keeps; the config cannot remove them.
+SECRET_EXCLUDES=(credentials .ssh '.cli-proxy-api*' '*.env' '.env' '.env.*'
+    .credentials.json auth.json '.claude/settings.json' '.claude/settings.local.json'
+    .npmrc .netrc .pypirc .git-credentials credentials.json
+    'id_rsa*' 'id_ed25519*' 'id_ecdsa*' 'id_dsa*' '*.pem' '*.key' '*.p12' '*.pfx' secrets
+    restic-password b2.env)
+
+run() {
+    if (( dry_run )); then printf 'DRY-RUN:'; printf ' %q' "$@"; printf '\n'; else "$@"; fi
+}
+
+copy_dir="$STATE_DIR/sqlite-copies"
+
+case "$mode" in
+    show-config)
+        declare -p config RESTIC_REPOSITORY BACKUP_HOST BACKUP_TAG BACKUP_PATHS \
+            BACKUP_OPTIONAL_PATHS EXTRA_EXCLUDES SQLITE_COPIES COMPRESSION KEEP_ARGS \
+            PRUNE_ARGS VERIFY_FILE STATE_DIR LOCK_FILE NOTIFY_CMD BULK_EXCLUDES
+        exit 0 ;;
+    notify)
+        unit="${2:-unknown unit}"
+        run "${NOTIFY_CMD[@]}" "Backup failed on $BACKUP_HOST" \
+            "Unit $unit failed. Inspect: journalctl --user -u $unit"
+        exit 0 ;;
+    dbcopy)
+        # Daily consistent copies of live SQLite files; backups read the copies,
+        # because a live database that rewrites most pages bloats every snapshot.
+        # Copies are named by basename, so two databases with one name would
+        # overwrite each other's copy.
+        dupes=$(for db in "${SQLITE_COPIES[@]}"; do basename -- "$db"; done | sort | uniq -d)
+        if [[ -n "$dupes" ]]; then
+            echo "dbcopy: SQLITE_COPIES has more than one file named: $dupes" >&2; exit 2
+        fi
+        run mkdir -p "$copy_dir"
+        for db in "${SQLITE_COPIES[@]}"; do
+            [[ -f "$db" ]] || { echo "dbcopy: missing $db, skipped" >&2; continue; }
+            out="$copy_dir/$(basename "$db")"
+            run python3 -I -c 'import sqlite3,sys; s=sqlite3.connect("file:"+sys.argv[1]+"?mode=ro",uri=True); d=sqlite3.connect(sys.argv[2]); s.backup(d); d.close(); s.close()' \
+                "$db" "$out.tmp"
+            run mv -f "$out.tmp" "$out"
+        done
+        exit 0 ;;
+    backup|initial|prune|check) ;;
+    *) echo "$usage" >&2; exit 2 ;;
+esac
+
+if [[ -z "$RESTIC_REPOSITORY" ]]; then
+    if (( dry_run )); then RESTIC_REPOSITORY='b2:BUCKET:PATH'
+    else echo "b2-backup: set RESTIC_REPOSITORY in $config" >&2; exit 2; fi
+fi
+
+# Dry runs take no lock, read no credentials and write no state.
+if (( ! dry_run )); then
+    # One nonblocking lock for backup, prune and check: an overlapping run skips.
+    mkdir -p "$(dirname "$LOCK_FILE")"
+    exec 9>"$LOCK_FILE"
+    if ! flock -n 9; then
+        echo 'Another backup or prune is active; skipping.'
+        exit 0
+    fi
+    if [[ -f "$B2_ENV_FILE" ]]; then set -a; source "$B2_ENV_FILE"; set +a; fi
+    export RESTIC_PASSWORD_FILE
+    mkdir -p "$STATE_DIR"
+fi
+export RESTIC_REPOSITORY
+
+case "$mode" in
+    prune)
+        # Never prune other hosts or tags, even inside a dedicated repository.
+        run restic forget --prune --host "$BACKUP_HOST" --tag "$BACKUP_TAG" \
+            "${KEEP_ARGS[@]}" "${PRUNE_ARGS[@]}"
+        ;;
+    check)
+        # Structure check from the local cache; no --read-data (no pack downloads).
+        run restic check --with-cache
+        ;;
+    backup|initial)
+        paths=("${BACKUP_PATHS[@]}")
+        for p in "${BACKUP_OPTIONAL_PATHS[@]}"; do [[ -e "$p" ]] && paths+=("$p"); done
+        [[ ${#SQLITE_COPIES[@]} -gt 0 && -d "$copy_dir" ]] && paths+=("$copy_dir")
+        opts=(--one-file-system --exclude-caches --tag "$BACKUP_TAG" --host "$BACKUP_HOST")
+        [[ -n "$COMPRESSION" ]] && opts+=(--compression "$COMPRESSION")
+        for pattern in "${SECRET_EXCLUDES[@]}" "${BULK_EXCLUDES[@]}" "${EXTRA_EXCLUDES[@]}"; do
+            opts+=(--exclude "$pattern")
+        done
+        # Absolute exclusions for the secret files this tool itself reads.
+        opts+=(--exclude "$B2_ENV_FILE" --exclude "$RESTIC_PASSWORD_FILE")
+        # The live SQLite files are backed up through their daily copies.
+        for db in "${SQLITE_COPIES[@]}"; do opts+=(--exclude "$db" --exclude "$db-*"); done
+        opts+=(--exclude "$copy_dir/*.tmp")   # a dbcopy that is still writing
+        run restic backup "${opts[@]}" "${paths[@]}"
+        if [[ -n "$VERIFY_FILE" && ! -f "$STATE_DIR/verified" ]]; then
+            restore_dir=$( (( dry_run )) && echo /tmp/RESTORE-DIR || mktemp -d)
+            (( dry_run )) || trap 'rm -rf -- "$restore_dir"' EXIT
+            run restic snapshots --host "$BACKUP_HOST" --tag "$BACKUP_TAG" --latest 1
+            run restic restore latest --host "$BACKUP_HOST" --tag "$BACKUP_TAG" \
+                --include "$VERIFY_FILE" --target "$restore_dir"
+            run cmp "$VERIFY_FILE" "$restore_dir$VERIFY_FILE"
+            if (( ! dry_run )); then
+                date --iso-8601=seconds > "$STATE_DIR/verified"
+                echo "Verified: snapshot exists and restored $VERIFY_FILE matches."
+            fi
+        fi
+        ;;
+esac

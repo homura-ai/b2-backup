@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the restic B2 backup hourly
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+AccuracySec=1min
+Unit=b2-backup.service
+
+[Install]
+WantedBy=timers.target
