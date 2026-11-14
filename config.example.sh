@@ -10,7 +10,7 @@ RESTIC_REPOSITORY=b2:YOUR-BUCKET:YOUR-HOST
 
 BACKUP_PATHS=("$HOME/code" "$HOME/.config/systemd/user" "$HOME/.local/bin")
 # Added only when they exist (for example git bundles of unpushed work).
-BACKUP_OPTIONAL_PATHS=("$HOME/rescue")
+# BACKUP_OPTIONAL_PATHS=("$HOME/git-bundles")
 
 # Machine-specific excludes: patterns or absolute paths. Examples:
 EXTRA_EXCLUDES=(
