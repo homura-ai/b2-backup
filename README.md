@@ -40,6 +40,7 @@ session, and `notify-send` unless you set `NOTIFY_CMD`.
 ## Install
 
 ```bash
+mkdir -p ~/.local/bin ~/.config/systemd/user
 install -m 700 b2-backup ~/.local/bin/b2-backup
 mkdir -p ~/.config/b2-backup && chmod 700 ~/.config/b2-backup
 cp -n config.example.sh ~/.config/b2-backup/config.sh     # then edit it
