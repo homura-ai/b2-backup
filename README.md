@@ -24,12 +24,9 @@ All settings live in `~/.config/b2-backup/config.sh` (override the path with
 
 ## Status
 
-**Working.** It is the generic form of a backup script that has saved hourly
-snapshots to B2 on a daily-use laptop. This generic copy has not itself run
-against B2. `python3 test_backup.py` runs 16 tests offline, with a stub restic
-and a throwaway local restic repository. One of them backs up real fixture files
-and checks that the secret and build files were left out (it is skipped when
-restic is not installed).
+`python3 test_backup.py` runs offline with a stub restic and a throwaway local
+repository. It verifies that backup files are included and secret and build
+files are excluded.
 
 ## Dependencies
 
@@ -40,6 +37,7 @@ session, and `notify-send` unless you set `NOTIFY_CMD`.
 ## Install
 
 ```bash
+mkdir -p ~/.local/bin ~/.config/systemd/user
 install -m 700 b2-backup ~/.local/bin/b2-backup
 mkdir -p ~/.config/b2-backup && chmod 700 ~/.config/b2-backup
 cp -n config.example.sh ~/.config/b2-backup/config.sh     # then edit it
@@ -63,13 +61,11 @@ systemctl --user enable --now b2-backup.timer b2-backup-prune.timer \
 Until `dbcopy` has run once, a database in `SQLITE_COPIES` is in no snapshot:
 the live file is always excluded and the copy does not exist yet.
 
-**Moving from another backup script.** Disable the old timers before enabling
-these. The two tools use different lock files, so nothing stops both from
-uploading every hour, and both would run a prune. If you keep the same
-repository, set `BACKUP_HOST` and `BACKUP_TAG` to the host and tag the old
-script used, or the weekly prune will not apply retention to the older
-snapshots. Put the old script's machine-specific paths and
-excludes into `BACKUP_PATHS` / `EXTRA_EXCLUDES` and compare with
+**Moving from another backup script.** Disable its timers before enabling
+these to avoid duplicate uploads and prunes. If you keep the same repository,
+use the old `BACKUP_HOST` and `BACKUP_TAG` so the weekly prune applies retention
+to older snapshots. Put your backup paths and excludes into `BACKUP_PATHS` and
+`EXTRA_EXCLUDES` and compare with
 `b2-backup show-config` and `b2-backup --dry-run backup` first.
 
 **Save the restic password somewhere off the machine.** Without it the backup
@@ -81,8 +77,10 @@ Restore to a separate directory, never over live files:
 ```bash
 set -a; source ~/.config/b2-backup/b2.env; set +a
 export RESTIC_REPOSITORY=b2:YOUR-BUCKET:YOUR-HOST RESTIC_PASSWORD_FILE=~/.config/b2-backup/restic-password
-restic snapshots --host "$(hostname -s)" --tag auto
-restic restore latest --host "$(hostname -s)" --tag auto --target ~/restic-restore
+# Use BACKUP_HOST and BACKUP_TAG from b2-backup show-config, even after a host rename.
+BACKUP_HOST=YOUR-BACKUP-HOST BACKUP_TAG=auto
+restic snapshots --host "$BACKUP_HOST" --tag "$BACKUP_TAG"
+restic restore latest --host "$BACKUP_HOST" --tag "$BACKUP_TAG" --target ~/restic-restore
 ```
 
 ## Uninstall
@@ -102,10 +100,10 @@ systemctl --user daemon-reload
   and so on, wherever it is, including hand-written source folders with those
   names. Override `BULK_EXCLUDES` in the config if that matters; the secret
   excludes cannot be overridden.
-- B2 caps downloads and Class B calls. A daily prune once helped use up the
-  cap, and backups failed with HTTP 403 `download_cap_exceeded` until the daily
-  reset. That is why the prune now runs weekly and is cap-safe. Unused
-  space is only freed when whole packs are unused, so the repository grows
+- B2 caps downloads and Class B calls. A prune can exhaust the cap and cause
+  HTTP 403 `download_cap_exceeded` until the daily reset. The weekly prune
+  avoids repacking data, so space is only freed when whole packs are unused.
+  The repository grows
   faster. If you need it smaller, run a full prune by hand when the cap allows.
 - `check` does not read pack data, and the restore check covers one file, once.
 - The notifier only reports. If `NOTIFY_CMD` fails, the failure is logged.
